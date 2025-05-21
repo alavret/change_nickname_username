@@ -170,16 +170,16 @@ uid;displayName;old_userName;new_userName
 |----------------------|------------------------|
 | passport:scim-api.all | Управление федерациями |
 
-<img src="images/oauth_permissions.jpg" width="600">
+<img src="images/scim_app_permissions.jpg" width="600">
         
 6. Нажимаем на кнопку "Создать приложение".
 7. Свойства созданного приложения отображаются в новом окне "Мои приложения". Ищем раздел с идентификатором созданного приложения и копируем строку из поля "ClientID":
       
-<img src="images/app_id.jpg" width="600">
+<img src="images/scim_app_client_id.jpg" width="600">
 
 8. Если вы этого не сделали при настройке SSO для организации Яндекс 360, внесите идентификатор приложения в соответствующее поле в разделе SSO (Общие настройки -> Единый вход (SSO))
 
-<img src="images/app_id.jpg" width="600">
+<img src="images/scim_app_sso.jpg" width="600">
 
 9. Скопируйте дополнительно к идентификатору приложения секрет приложени. Сформируйте команду для получения токена приложения.
 Через `curl`:
@@ -199,7 +199,7 @@ $response | ConvertTo-Json
 
 Для параметра `SCIM_DOMAIN_ID_ARG` нужно использовать идентификатор домена из настроек SSO:
 
-<img src="images/app_id.jpg" width="600">
+<img src="images/scim_app_sso.jpg" width="600">
 
 ### 2. Приложение для работы с API 360. ###  
 
