@@ -10,6 +10,7 @@ from http import HTTPStatus
 import time
 from os import environ
 import argparse
+import csv
 
 DEFAULT_360_SCIM_API_URL = "https://{domain_id}.scim-api.passport.yandex.net/"
 DEFAULT_360_API_URL = "https://api360.yandex.net"
@@ -44,6 +45,8 @@ class SettingParams:
 
 def get_settings():
     exit_flag = False
+    scim_token_bad = False
+    oauth_token_bad = False
     settings = SettingParams (
         scim_token = os.environ.get("SCIM_TOKEN_ARG"),
         domain_id = os.environ.get("SCIM_DOMAIN_ID_ARG"),
@@ -55,8 +58,8 @@ def get_settings():
     )
 
     if not settings.scim_token:
-        logger.error("SCIM_TOKEN_ARG is not set")
-        exit_flag = True
+        logger.info("SCIM_TOKEN_ARG is not set")
+        scim_token_bad = True
 
     if settings.domain_id.strip() == "":
         logger.error("SCIM_DOMAIN_ID_ARG is not set")
@@ -70,19 +73,22 @@ def get_settings():
         settings.new_login_default_format = "alias@domain.tld"
     
     if not settings.oauth_token:
-        logger.error("OAUTH_TOKEN_ARG is not set")
-        exit_flag = True
+        logger.info("OAUTH_TOKEN_ARG is not set")
+        oauth_token_bad = True
 
     if not settings.org_id:
         logger.error("ORG_ID_ARG is not set")
         exit_flag = True
 
     if not check_scim_token(settings.scim_token, settings.domain_id):
-        logger.error("SCIM_TOKEN_ARG is not valid")
-        exit_flag = True
+        logger.info("SCIM_TOKEN_ARG is not valid")
+        scim_token_bad = True
 
     if not check_oauth_token(settings.oauth_token, settings.org_id):
-        logger.error("OAUTH_TOKEN_ARG is not valid")
+        logger.info("OAUTH_TOKEN_ARG is not valid")
+        oauth_token_bad = True
+
+    if scim_token_bad and oauth_token_bad:
         exit_flag = True
     
     if exit_flag:
@@ -291,10 +297,11 @@ def main_menu(settings: "SettingParams"):
         print("5. Use users file to change SCIM loginName of users.")
         print("6. Enter old and new value of userName manually and confirm renaming.")
         print("7. Change nickname of single user.")
+        print("8. Выгрузить всех пользователей в файл (SCIM и API).")
         
         print("0. Exit")
 
-        choice = input("Enter your choice (0-7): ")
+        choice = input("Enter your choice (0-8): ")
 
         if choice == "0":
             print("Goodbye!")
@@ -314,11 +321,14 @@ def main_menu(settings: "SettingParams"):
         elif choice == "5":
             print('\n')
             update_users_from_file(settings)
+        elif choice == "6":
+            print('\n')
+            interactive_mode(settings)
         elif choice == "7":
             print('\n')
             change_nickname_prompt(settings)
-        elif choice == "6":
-            interactive_mode(settings)
+        elif choice == "8":
+            write_to_file(settings)
         else:
             print("Invalid choice. Please try again.")
 
@@ -731,122 +741,149 @@ def save_user_data_prompt(settings: "SettingParams"):
         return
     
     logger.info("\n")
-    logger.info(f"--------------------------------------------------------")
+    logger.info("--------------------------------------------------------")
     logger.info(f'API 360 attributes for user with id: {target_user["id"]}')
-    logger.info(f"--------------------------------------------------------")
+    logger.info("--------------------------------------------------------")
     for k, v in target_user.items():
         if k.lower() == "contacts":
-            logger.info(f"Contacts")
+            logger.info("Contacts")
             for l in v: 
                 for k1, v1 in l.items():  
                     logger.info(f" - {k1}: {v1}")
-                logger.info(f" -")
+                logger.info(" -")
         elif k.lower() == "aliases":
-            logger.info(f"Aliases")
+            logger.info("Aliases")
             for l in v:
                 logger.info(f" - {l}")
         elif k.lower() == "name":
-            logger.info(f"Name")
+            logger.info("Name")
             for k1, v1 in v.items():  
                 logger.info(f" - {k1}: {v1}")
         else:
             logger.info(f"{k}: {v}")
-    logger.info(f"--------------------------------------------------------")
-    logger.info(f"--------------------------------------------------------")
+    logger.info("--------------------------------------------------------")
+    logger.info("--------------------------------------------------------")
     logger.info(f'SCIM attributes for user with id: {target_scim_user["id"]}')
-    logger.info(f"--------------------------------------------------------")
+    logger.info("--------------------------------------------------------")
     for k, v in target_scim_user.items():
         if k.lower() == "emails":
-            logger.info(f"Emails")
+            logger.info("Emails")
             for l in v:
                 for k1, v1 in l.items():   
                     logger.info(f" - {k1}: {v1}")
-                logger.info(f" -")
+                logger.info(" -")
         elif k.lower() == "metadata":
-            logger.info(f"Metadata")
+            logger.info("Metadata")
             for k1, v1 in v.items():  
                 logger.info(f" - {k1}: {v1}")
         elif k.lower() == "name":
-            logger.info(f"name")
+            logger.info("name")
             for k1, v1 in v.items():  
                 logger.info(f" - {k1}: {v1}")
         elif k.lower() == "meta":
-            logger.info(f"meta")
+            logger.info("meta")
             for k1, v1 in v.items():  
                 logger.info(f" - {k1}: {v1}")
         elif k.lower() == "phonenumbers":
-            logger.info(f"phoneNumbers")
+            logger.info("phoneNumbers")
             for l in v:
                 for k1, v1 in l.items():  
                     logger.info(f" - {k1}: {v1}")
-                logger.info(f" -")
+                logger.info(" -")
         elif k == "urn:ietf:params:scim:schemas:extension:yandex360:2.0:User":
-            logger.info(f"aliases")
+            logger.info("aliases")
             for l in v["aliases"]:
                 for k1, v1 in l.items():
                     logger.info(f" - {k1}: {v1}")
         else:
             logger.info(f"{k}: {v}")
-    logger.info(f"--------------------------------------------------------")
+    logger.info("--------------------------------------------------------")
     logger.info("\n")
     with open(f"{target_user['nickname']}.txt", "w", encoding="utf-8") as f:
         f.write(f'API 360 attributes for user with id: {target_user["id"]}\n')
-        f.write(f"--------------------------------------------------------\n")
+        f.write("--------------------------------------------------------\n")
         for k, v in target_user.items():
             if k.lower() == "contacts":
-                f.write(f"Contacts\n")
+                f.write("Contacts\n")
                 for l in v: 
                     for k1, v1 in l.items():  
                         f.write(f" - {k1}: {v1}\n")
-                    f.write(f" -\n")
+                    f.write(" -\n")
             elif k.lower() == "aliases":
-                f.write(f"Aliases\n")
+                f.write("Aliases\n")
                 for l in v:
                     f.write(f" - {l}\n")
             elif k.lower() == "name":
-                f.write(f"Name\n")
+                f.write("Name\n")
                 for k1, v1 in v.items():  
                     f.write(f" - {k1}: {v1}\n")
             else:
                 f.write(f"{k}: {v}\n")
-        f.write(f"--------------------------------------------------------\n")
-        f.write(f"--------------------------------------------------------\n")
+        f.write("--------------------------------------------------------\n")
+        f.write("--------------------------------------------------------\n")
         f.write(f'SCIM attributes for user with id: {target_scim_user["id"]}\n')
-        f.write(f"--------------------------------------------------------\n")
+        f.write("--------------------------------------------------------\n")
         for k, v in target_scim_user.items():
             if k.lower() == "emails":
-                f.write(f"Emails\n")
+                f.write("Emails\n")
                 for l in v:
                     for k1, v1 in l.items():   
                         f.write(f" - {k1}: {v1}\n")
-                    f.write(f" -\n")
+                    f.write(" -\n")
             elif k.lower() == "metadata":
-                f.write(f"Metadata\n")
+                f.write("Metadata\n")
                 for k1, v1 in v.items():  
                     f.write(f" - {k1}: {v1}\n")
             elif k.lower() == "name":
-                f.write(f"name\n")
+                f.write("name\n")
                 for k1, v1 in v.items():  
                     f.write(f" - {k1}: {v1}\n")
             elif k.lower() == "meta":
-                f.write(f"meta\n")
+                f.write("meta\n")
                 for k1, v1 in v.items():  
                     f.write(f" - {k1}: {v1}\n")
             elif k.lower() == "phonenumbers":
-                f.write(f"phoneNumbers\n")
+                f.write("phoneNumbers\n")
                 for l in v:
                     for k1, v1 in l.items():  
                         f.write(f" - {k1}: {v1}\n")
-                    f.write(f" -\n")
+                    f.write(" -\n")
             elif k == "urn:ietf:params:scim:schemas:extension:yandex360:2.0:User":
-                f.write(f"aliases")
+                f.write("aliases")
                 for l in v["aliases"]:
                     for k1, v1 in l.items():
                         f.write(f" - {k1}: {v1}\n")
             else:
                 f.write(f"{k}: {v}\n")
-        f.write(f"--------------------------------------------------------\n")
+        f.write("--------------------------------------------------------\n")
     logger.info(f"User attributes saved to file: {target_user['nickname']}.txt")
+
+def write_to_file(settings: "SettingParams"):
+    users = get_all_api360_users(settings)
+    scim_users = get_all_scim_users(settings)  
+    if not users:
+        logger.error("No users found from API 360 calls.")
+        return
+    else:
+        with open('api_users.csv', 'w', encoding='utf-8', newline='') as csv_file:
+            fieldnames = users[0].keys()
+            writer = csv.DictWriter(csv_file, delimiter=';', fieldnames=fieldnames)
+            writer.writeheader()
+            for user in users:
+                writer.writerow(user)
+            logger.info(f"Saved {len(users)} API users to api_users.csv")
+    if not scim_users:
+        logger.error("No users found from SCIM calls.")
+        return
+    else:
+        with open('scim_users.csv', 'w', encoding='utf-8', newline='') as csv_file:
+            fieldnames = scim_users[0].keys()
+            writer = csv.DictWriter(csv_file, delimiter=';', fieldnames=fieldnames)
+            writer.writeheader()
+            for user in scim_users:
+                writer.writerow(user)
+            logger.info(f"Saved {len(scim_users)} SCIM users to scim_users.csv")
+
 
 if __name__ == "__main__":
 
@@ -855,8 +892,11 @@ if __name__ == "__main__":
     if os.path.exists(denv_path):
         load_dotenv(dotenv_path=denv_path,verbose=True, override=True)
 
-    logger.debug(f"Запуск скрипта.")
+    logger.debug("Запуск скрипта.")
     settings = get_settings()
+    if settings is None:
+        logger.error("Check config setting in .env file and try again.")
+        sys.exit(EXIT_CODE)
 
     try:
         main(settings)
