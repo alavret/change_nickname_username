@@ -223,7 +223,7 @@ def single_mode(settings: "SettingParams", old_value, new_value):
         except Exception as e:
             logger.error(f"{type(e).__name__} at line {e.__traceback__.tb_lineno} of {__file__}: {e}")
     else:
-        logger.debug(f"List of users is empty.")
+        logger.debug("List of users is empty.")
 
 def main(settings: "SettingParams"):
     """Основная функция скрипта."""
@@ -292,16 +292,18 @@ def main_menu(settings: "SettingParams"):
         print("Select option:")
         print("1. Set new loginName format (default: alias@domail.tld).")
         print("2. Check alias for users.")
-        print("3. Save user info to file.")
-        print("4. Download current SCIM users into file.")
+        print("3. Save user attributes to file.")
+        print("4. Create SCIM data file for modification in next step.")
         print("5. Use users file to change SCIM loginName of users.")
         print("6. Enter old and new value of userName manually and confirm renaming.")
         print("7. Change nickname of single user.")
-        print("8. Выгрузить всех пользователей в файл (SCIM и API).")
+        print("8. Dowanload all users to file (SCIM и API).")
+        print("A. Create file for default email modification.")
+        print("B. Update default email from file.")
         
         print("0. Exit")
 
-        choice = input("Enter your choice (0-8): ")
+        choice = input("Enter your choice (0-9, A-B): ")
 
         if choice == "0":
             print("Goodbye!")
@@ -329,6 +331,10 @@ def main_menu(settings: "SettingParams"):
             change_nickname_prompt(settings)
         elif choice == "8":
             write_to_file(settings)
+        elif choice.upper() == "A":
+            default_email_create_file(settings)
+        elif choice.upper() == "B":
+            default_email_update_from_file(settings)
         else:
             print("Invalid choice. Please try again.")
 
@@ -360,6 +366,20 @@ def get_all_api360_users(settings: "SettingParams"):
         return []
     return users
 
+def get_default_email(settings: "SettingParams", userId: str):
+    logger.debug(f"Getting default email for user {userId}...")
+    url = f"{DEFAULT_360_API_URL}/admin/v1/org/{settings.org_id}/mail/users/{userId}/settings/sender_info"
+    headers = {"Authorization": f"OAuth {settings.oauth_token}"}
+    data = {}
+    try:
+        response = requests.get(url, headers=headers)
+        if response.ok:
+                data = response.json()
+    except requests.exceptions.RequestException as e:
+        logger.error(f"{type(e).__name__} at line {e.__traceback__.tb_lineno} of {__file__}: {e}")
+        return []
+    return data
+
 def get_all_scim_users(settings: "SettingParams"):
     logger.info("Getting all users of the organisation from SCIM...")
     users = []
@@ -380,7 +400,7 @@ def get_all_scim_users(settings: "SettingParams"):
                     time.sleep(RETRIES_DELAY_SEC * retries)
                     retries += 1
                 else:
-                    logger.error(f"Forcing exit without getting data.")
+                    logger.error("Forcing exit without getting data.")
                     return
             else:
                 retries = 1
@@ -599,7 +619,7 @@ def download_users_to_file(settings: "SettingParams", onlyList = False):
                     f.write(f"{user['id']};{user['displayName']};{user['userName']};{new_userName}\n")
             logger.info(f"{len(users)} users downloaded to file {settings.users_file}")
     else:
-        logger.info(f"No users found. Check your settings.")
+        logger.info("No users found. Check your settings.")
         return []
     return users
 
@@ -626,7 +646,7 @@ def update_users_from_file(settings: "SettingParams"):
                     logger.debug(f"User {old_userName} ({displayName}) has the same new name {new_userName}. Skipping.")
                     continue
                 user_for_change.append(temp)
-            except ValueError as e:
+            except ValueError:
                 logger.error(f"Line number {line_number} has wrong count of values (should be 4 values, separated by semicolon. Skipping")
 
             except Exception as e:
@@ -686,7 +706,7 @@ def update_users_from_file(settings: "SettingParams"):
             logger.error(f"{type(e).__name__} at line {e.__traceback__.tb_lineno} of {__file__}: {e}")
 
 def save_user_data_prompt(settings: "SettingParams"):
-    answer = input(f"Enter target user key in format: id:<UID> or userName:<SCIM_USER_NAME> or <API_360_NICKNAME> or <API_360_ALIAS> (empty string to exit): ")
+    answer = input("Enter target user key in format: id:<UID> or userName:<SCIM_USER_NAME> or <API_360_NICKNAME> or <API_360_ALIAS> (empty string to exit): ")
     if not answer.strip():
         return
     if ":" in answer:
@@ -709,10 +729,10 @@ def save_user_data_prompt(settings: "SettingParams"):
     users = get_all_api360_users(settings)
     scim_users = get_all_scim_users(settings)  
     if not users:
-        logger.error(f"No users found from API 360 calls. Check your settings.")
+        logger.error("No users found from API 360 calls. Check your settings.")
         return
     if not scim_users:
-        logger.error(f"No users found from SCIM calls. Check your settings.")
+        logger.error("No users found from SCIM calls. Check your settings.")
         return
     target_user = None
     target_scim_user = None
@@ -884,6 +904,171 @@ def write_to_file(settings: "SettingParams"):
                 writer.writerow(user)
             logger.info(f"Saved {len(scim_users)} SCIM users to scim_users.csv")
 
+def default_email_create_file(settings: "SettingParams"):
+    users = get_all_api360_users(settings)
+    if not users:
+        logger.error("No users found from API 360 calls.")
+        return
+    else:
+        email_dict = {}
+        for user in users:
+            default_email_json = get_default_email(settings, user["id"])
+            email_dict[user["id"]] = default_email_json
+
+        with open("default_email_data.csv", "w", encoding="utf-8") as f:
+            f.write("nickname;new_DefaultEmail;new_DisplayName;old_DefaultEmail;old_DisplayName;uid\n")
+            for user in users:
+                email_data = email_dict[user["id"]]
+                if email_data:
+                    f.write(f"{user['nickname']};{email_data['defaultFrom']};{email_data['fromName']};{email_data['defaultFrom']};{email_data['fromName']};{user['id']}\n")
+            logger.info("Default emails downloaded to default_email_data.csv file")
+
+def default_email_update_from_file(settings: "SettingParams"):
+    all_users = []
+    exit_flag = False
+    try:
+        with open('default_email_data.csv', mode='r', newline='', encoding='utf-8') as file:
+            reader = csv.DictReader(file, delimiter=';')
+            headers = reader.fieldnames
+            for row in reader:
+                all_users.append(row) 
+
+    except FileNotFoundError:
+        logger.error("Input file default_email_data.csv not found. Exiting.")
+        exit_flag = True
+    except Exception as e:
+        logger.error(f"{type(e).__name__} at line {e.__traceback__.tb_lineno} of {__file__}: {e}")
+        exit_flag = True
+    
+    if all_users == []:
+        logger.error("Input file default_email_data.csv is empty. Exiting.")
+        exit_flag = True
+
+    if exit_flag:
+        return
+
+    exit_flag = False
+    
+    normalized_users = []
+    for user in all_users:
+        if "nickname" not in user:
+            exit_flag = True
+            break
+        else:
+            if user["nickname"] is None or user["nickname"].strip() == "":
+                continue
+
+        email_empty = False
+        if "new_DefaultEmail" not in user:  
+            user["new_DefaultEmail"] = ""
+            email_empty = True
+        else:
+            if user["new_DefaultEmail"] is None or user["new_DefaultEmail"].strip() == "":
+                user["new_DefaultEmail"] = ""
+                email_empty = True
+            else:
+                if "@" not in user["new_DefaultEmail"].strip():
+                    continue
+
+        name_empty = False
+        if "new_DisplayName" not in user:  
+            user["new_DisplayName"] = ""
+            name_empty = True
+        else:
+            if user["new_DisplayName"] is None or user["new_DisplayName"].strip() == "":
+                user["new_DisplayName"] = ""
+                name_empty = True
+
+        if email_empty and name_empty:
+            continue
+
+        if "old_DefaultEmail" not in user:  
+            user["old_DefaultEmail"] = ""
+        if "old_DisplayName" not in user:  
+            user["old_DisplayName"] = "" 
+        if "uid" not in user:  
+            user["uid"] = ""   
+        normalized_users.append(user)
+
+    if exit_flag:
+        logger.error("There are must be column 'nickname' in input file ('default_email_data.csv').")
+        return
+    
+    if not normalized_users:
+        logger.info("List of modified users is empty. File must contains column 'nickname' and actual data in 'new_DefaultEmail' or 'new_DisplayName' columns.")
+        return
+    
+    answer = input(f"Modify personal email data for {len(normalized_users)} users? (Y/n): ")
+    if answer.upper() not in ["Y", "YES"]:
+        return
+    
+    api_users = get_all_api360_users(settings)
+    if not api_users:
+        logger.error("No users found from API 360 calls.")
+        return
+    
+    url = f"{DEFAULT_360_API_URL}/admin/v1/org/{settings.org_id}/mail/users" 
+    headers = {"Authorization": f"OAuth {settings.oauth_token}"}
+    for user in normalized_users:
+        if "@" in user["nickname"]:
+            alias = user["nickname"].strip().split("@")[0]
+        else:
+            alias = user["nickname"].strip()
+        uid = ""
+        for api_user in api_users:
+            if api_user["nickname"] == alias:
+                if api_user["id"].startswith("113"):
+                    uid = api_user["id"]
+                    break
+            else:
+                if alias in api_user["aliases"]:
+                    if api_user["id"].startswith("113"):
+                        uid = api_user["id"]
+                        break
+
+        if not uid:
+            logger.error(f"User with nickname {alias} not found in API 360 calls.")
+            continue
+
+        try:
+            retries = 1
+            data = get_default_email(settings, uid)
+            if not data:
+                logger.error(f"Can not get email config for user {uid} with alias {alias}.")
+                continue
+            change_name = False
+            change_mail = False
+            if user["new_DisplayName"].strip(): 
+                if data["fromName"] != user["new_DisplayName"].strip():
+                    change_name = True
+            if user["new_DefaultEmail"].strip(): 
+                if data["defaultFrom"] != user["new_DefaultEmail"].strip():
+                    change_mail = True 
+            if not (change_name or change_mail):
+                logger.info(f"Skipping to change email configuration for user {uid} with alias {alias} - nothing to change...")
+                continue   
+            else:
+                logger.info(f"Changing user {uid} with alias {alias}: {data["fromName"]} ({data["defaultFrom"]}) to {user["new_DisplayName"]} ({user["new_DefaultEmail"]})...")
+            while True:
+                if change_name:
+                    data["fromName"] = user["new_DisplayName"].strip()
+                if change_mail:
+                    data["defaultFrom"] = user["new_DefaultEmail"].strip()
+                response = requests.post(f"{url}/{uid}/settings/sender_info", headers=headers, json=data)
+                if response.status_code != HTTPStatus.OK.value:
+                    logger.error(f"Error during PATCH request: {response.status_code}. Error message: {response.text}")
+                    if retries < MAX_RETRIES:
+                        logger.error(f"Retrying ({retries+1}/{MAX_RETRIES})")
+                        time.sleep(RETRIES_DELAY_SEC * retries)
+                        retries += 1
+                    else:
+                        logger.error(f"Error. Patching email data for user {uid} ({alias}) failed.")
+                        break
+                else:
+                    logger.info(f"Success - email data for user {uid} ({alias}) changed successfully.")
+                    break
+        except Exception as e:
+            logger.error(f"{type(e).__name__} at line {e.__traceback__.tb_lineno} of {__file__}: {e}")
 
 if __name__ == "__main__":
 
@@ -893,6 +1078,7 @@ if __name__ == "__main__":
         load_dotenv(dotenv_path=denv_path,verbose=True, override=True)
 
     logger.debug("Запуск скрипта.")
+
     settings = get_settings()
     if settings is None:
         logger.error("Check config setting in .env file and try again.")
