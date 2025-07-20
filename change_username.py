@@ -42,6 +42,8 @@ class SettingParams:
     org_id: int
     users_file : str
     new_login_default_format : str
+    default_email_output_file : str
+    default_email_input_file : str
 
 def get_settings():
     exit_flag = False
@@ -54,6 +56,8 @@ def get_settings():
         new_login_default_format = os.environ.get("NEW_LOGIN_DEFAULT_FORMAT_ARG"),
         oauth_token = os.environ.get("OAUTH_TOKEN_ARG"),
         org_id = os.environ.get("ORG_ID_ARG"),
+        default_email_output_file = os.environ.get("DEFAULT_EMAIL_OUTPUT_FILE_ARG"),
+        default_email_input_file = os.environ.get("DEFAULT_EMAIL_INPUT_FILE_ARG"),
 
     )
 
@@ -372,9 +376,21 @@ def get_default_email(settings: "SettingParams", userId: str):
     headers = {"Authorization": f"OAuth {settings.oauth_token}"}
     data = {}
     try:
-        response = requests.get(url, headers=headers)
-        if response.ok:
+        retries = 1
+        while True:
+            response = requests.get(url, headers=headers)
+            if response.status_code != HTTPStatus.OK.value:
+                logger.error(f"Error during GET request for user {userId}: {response.status_code}. Error message: {response.text}")
+                if retries < MAX_RETRIES:
+                    logger.error(f"Retrying ({retries+1}/{MAX_RETRIES})")
+                    time.sleep(RETRIES_DELAY_SEC * retries)
+                    retries += 1
+                else:
+                    logger.error(f"Error. Getting default email data for user {userId} failed.")
+                    break
+            else:
                 data = response.json()
+                break
     except requests.exceptions.RequestException as e:
         logger.error(f"{type(e).__name__} at line {e.__traceback__.tb_lineno} of {__file__}: {e}")
         return []
@@ -912,38 +928,59 @@ def default_email_create_file(settings: "SettingParams"):
     else:
         email_dict = {}
         for user in users:
-            default_email_json = get_default_email(settings, user["id"])
-            email_dict[user["id"]] = default_email_json
+            if user["id"].startswith("113"):
+                default_email_json = get_default_email(settings, user["id"])
+                email_dict[user["id"]] = default_email_json
 
-        with open("default_email_data.csv", "w", encoding="utf-8") as f:
+        with open(settings.default_email_output_file, "w", encoding="utf-8") as f:
             f.write("nickname;new_DefaultEmail;new_DisplayName;old_DefaultEmail;old_DisplayName;uid\n")
             for user in users:
                 email_data = email_dict[user["id"]]
                 if email_data:
                     f.write(f"{user['nickname']};{email_data['defaultFrom']};{email_data['fromName']};{email_data['defaultFrom']};{email_data['fromName']};{user['id']}\n")
-            logger.info("Default emails downloaded to default_email_data.csv file")
+            logger.info(f"Default emails downloaded to {settings.default_email_output_file} file.")
 
 def default_email_update_from_file(settings: "SettingParams"):
     all_users = []
     exit_flag = False
-    try:
-        with open('default_email_data.csv', mode='r', newline='', encoding='utf-8') as file:
-            reader = csv.DictReader(file, delimiter=';')
-            headers = reader.fieldnames
-            for row in reader:
-                all_users.append(row) 
+    only_email = False
 
+    try:
+        with open(settings.default_email_input_file, "r", encoding="utf-8") as f:
+            all_users = f.readlines()
     except FileNotFoundError:
-        logger.error("Input file default_email_data.csv not found. Exiting.")
+        logger.error(f"Input file {settings.default_email_input_file} not found. Exiting.")
         exit_flag = True
     except Exception as e:
         logger.error(f"{type(e).__name__} at line {e.__traceback__.tb_lineno} of {__file__}: {e}")
         exit_flag = True
-    
+
     if all_users == []:
-        logger.error("Input file default_email_data.csv is empty. Exiting.")
+        logger.error(f"Input file {settings.default_email_input_file} is empty. Exiting.")
         exit_flag = True
 
+    if exit_flag:
+        return
+
+    if "@" in all_users[0]:
+        logger.info("Input file contains single column. Use it as target default email for all users.")
+        only_email = True
+    else:
+        all_users = [] 
+        try:
+            with open(settings.default_email_input_file, mode='r', newline='', encoding='utf-8') as file:
+                reader = csv.DictReader(file, delimiter=';')
+                headers = reader.fieldnames
+                for row in reader:
+                    all_users.append(row) 
+
+        except FileNotFoundError:
+            logger.error(f"Input file {settings.default_email_input_file} not found. Exiting.")
+            exit_flag = True
+        except Exception as e:
+            logger.error(f"{type(e).__name__} at line {e.__traceback__.tb_lineno} of {__file__}: {e}")
+            exit_flag = True
+        
     if exit_flag:
         return
 
@@ -951,44 +988,55 @@ def default_email_update_from_file(settings: "SettingParams"):
     
     normalized_users = []
     for user in all_users:
-        if "nickname" not in user:
-            exit_flag = True
-            break
-        else:
-            if user["nickname"] is None or user["nickname"].strip() == "":
+        if only_email:
+            if "@" in user:
+                user = user.strip("\n").strip().lower()
+                normalized_users.append({"nickname": user.split("@")[0], "new_DefaultEmail": user, "new_DisplayName": "", "old_DefaultEmail": "", "old_DisplayName": "", "uid": ""})
                 continue
-
-        email_empty = False
-        if "new_DefaultEmail" not in user:  
-            user["new_DefaultEmail"] = ""
-            email_empty = True
         else:
-            if user["new_DefaultEmail"] is None or user["new_DefaultEmail"].strip() == "":
+            if "nickname" not in user:
+                exit_flag = True
+                break
+            else:
+                if user["nickname"] is None or user["nickname"].strip() == "":
+                    continue
+                else:
+                    user["nickname"] = user["nickname"].strip().lower()
+
+            email_empty = False
+            if "new_DefaultEmail" not in user:  
                 user["new_DefaultEmail"] = ""
                 email_empty = True
             else:
-                if "@" not in user["new_DefaultEmail"].strip():
-                    continue
+                if user["new_DefaultEmail"] is None or user["new_DefaultEmail"].strip() == "":
+                    user["new_DefaultEmail"] = ""
+                    email_empty = True
+                else:
+                    if "@" not in user["new_DefaultEmail"].strip():
+                        continue
+                    else:
+                        user["new_DefaultEmail"] = user["new_DefaultEmail"].strip().lower()
+                        
 
-        name_empty = False
-        if "new_DisplayName" not in user:  
-            user["new_DisplayName"] = ""
-            name_empty = True
-        else:
-            if user["new_DisplayName"] is None or user["new_DisplayName"].strip() == "":
+            name_empty = False
+            if "new_DisplayName" not in user:  
                 user["new_DisplayName"] = ""
                 name_empty = True
+            else:
+                if user["new_DisplayName"] is None or user["new_DisplayName"].strip() == "":
+                    user["new_DisplayName"] = ""
+                    name_empty = True
 
-        if email_empty and name_empty:
-            continue
+            if email_empty and name_empty:
+                continue
 
-        if "old_DefaultEmail" not in user:  
-            user["old_DefaultEmail"] = ""
-        if "old_DisplayName" not in user:  
-            user["old_DisplayName"] = "" 
-        if "uid" not in user:  
-            user["uid"] = ""   
-        normalized_users.append(user)
+            if "old_DefaultEmail" not in user:  
+                user["old_DefaultEmail"] = ""
+            if "old_DisplayName" not in user:  
+                user["old_DisplayName"] = "" 
+            if "uid" not in user:  
+                user["uid"] = ""   
+            normalized_users.append(user)
 
     if exit_flag:
         logger.error("There are must be column 'nickname' in input file ('default_email_data.csv').")
