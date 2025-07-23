@@ -75,6 +75,12 @@ def get_settings():
 
     if not settings.new_login_default_format:
         settings.new_login_default_format = "alias@domain.tld"
+
+    if not settings.default_email_output_file:
+        settings.default_email_output_file = "default_email_output.csv"
+
+    if not settings.default_email_input_file:
+        settings.default_email_input_file = "default_email_input.csv"
     
     if not settings.oauth_token:
         logger.info("OAUTH_TOKEN_ARG is not set")
@@ -934,8 +940,8 @@ def default_email_create_file(settings: "SettingParams"):
 
         with open(settings.default_email_output_file, "w", encoding="utf-8") as f:
             f.write("nickname;new_DefaultEmail;new_DisplayName;old_DefaultEmail;old_DisplayName;uid\n")
-            for user in users:
-                email_data = email_dict[user["id"]]
+            for key in email_dict.keys():
+                email_data = email_dict[key]
                 if email_data:
                     f.write(f"{user['nickname']};{email_data['defaultFrom']};{email_data['fromName']};{email_data['defaultFrom']};{email_data['fromName']};{user['id']}\n")
             logger.info(f"Default emails downloaded to {settings.default_email_output_file} file.")
@@ -1090,7 +1096,7 @@ def default_email_update_from_file(settings: "SettingParams"):
                 if data["fromName"] != user["new_DisplayName"].strip():
                     change_name = True
             if user["new_DefaultEmail"].strip(): 
-                if data["defaultFrom"] != user["new_DefaultEmail"].strip():
+                if data["defaultFrom"].lower() != user["new_DefaultEmail"].strip().lower():
                     change_mail = True 
             if not (change_name or change_mail):
                 logger.info(f"Skipping to change email configuration for user {uid} with alias {alias} - nothing to change...")
