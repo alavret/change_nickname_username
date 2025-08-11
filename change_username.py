@@ -310,10 +310,11 @@ def main_menu(settings: "SettingParams"):
         print("8. Dowanload all users to file (SCIM и API).")
         print("A. Create file for default email modification.")
         print("B. Update default email from file.")
+        print("C. Save group attributes to file.")
         
         print("0. Exit")
 
-        choice = input("Enter your choice (0-9, A-B): ")
+        choice = input("Enter your choice (0-9, A-C): ")
 
         if choice == "0":
             print("Goodbye!")
@@ -345,6 +346,9 @@ def main_menu(settings: "SettingParams"):
             default_email_create_file(settings)
         elif choice.upper() == "B":
             default_email_update_from_file(settings)
+        elif choice.upper() == "C":
+            print('\n')
+            save_group_data_prompt(settings)
         else:
             print("Invalid choice. Please try again.")
 
@@ -375,6 +379,47 @@ def get_all_api360_users(settings: "SettingParams"):
         logger.error(f"{type(e).__name__} at line {e.__traceback__.tb_lineno} of {__file__}: {e}")
         return []
     return users
+
+def get_all_groups(settings: "SettingParams"):
+    logger.info("Getting all groups of the organisation...")
+    url = f"{DEFAULT_360_API_URL}/directory/v1/org/{settings.org_id}/groups?perPage=100"
+    headers = {"Authorization": f"OAuth {settings.oauth_token}"}
+    groups = []
+    try:
+        page = 1
+        while True:
+            response = requests.get(f"{url}&page={page}", headers=headers)
+            if response.ok:
+                data = response.json()
+                groups.extend(data['groups'])
+                if page >= data.get("pages", 1):
+                    break
+                page += 1
+            else:
+                logger.error(f"Error during GET request: {response.status_code}. Error message: {response.text}")
+                break
+    except requests.exceptions.RequestException as e:
+        logger.error(f"{type(e).__name__} at line {e.__traceback__.tb_lineno} of {__file__}: {e}")
+        return []
+    return groups
+
+def find_group_by_alias(groups: list, alias: str):
+    """Find group by exact alias match, email prefix match, or partial group name match"""
+    for group in groups:
+        # Check aliases
+        if alias in group.get('aliases', []):
+            return group
+        # Check email prefix (part before @)
+        email = group.get('email', '')
+        if email and '@' in email:
+            email_prefix = email.split('@')[0]
+            if email_prefix == alias:
+                return group
+        # Check group name (partial match, case-insensitive)
+        group_name = group.get('name', '')
+        if alias.lower() in group_name.lower():
+            return group
+    return None
 
 def get_default_email(settings: "SettingParams", userId: str):
     logger.debug(f"Getting default email for user {userId}...")
@@ -442,24 +487,27 @@ def get_all_scim_users(settings: "SettingParams"):
     return users
 
 def change_nickname_prompt(settings: "SettingParams"):
-    data = input("Enter old value and new value of nickname separated by space (empty sting to exit): ")
-    if len(data.strip()) == 0:
-        return
-    elif len(data.split()) != 2:
-        logger.error("Invalid input. Please enter old value and new value separated by space.")
-        return
-    else:
-        old_value, new_value = data.split()
-        change_nickname(settings, old_value, new_value)
+    while True:
+        data = input("Enter old value and new value of nickname separated by space (empty sting to exit): ")
+        if len(data.strip()) == 0:
+            break
+        elif len(data.split()) != 2:
+            logger.error("Invalid input. Please enter old value and new value separated by space.")
+        else:
+            old_value, new_value = data.split()
+            change_nickname(settings, old_value, new_value)
+    return
 
 def check_alias_prompt(settings: "SettingParams"):
-    data = input("Enter alias (without domain) to check (empty sting to exit): ")
-    if len(data.strip()) == 0:
-        return
-    elif len(data.split("@")) == 2:
-        data=data.split("@")[0]
+    while True:
+        data = input("Enter alias (without domain) to check (empty sting to exit): ")
+        if len(data.strip()) == 0:
+            break
+        elif len(data.split("@")) == 2:
+            data=data.split("@")[0]
 
-    check_alias(settings, data.lower())
+        check_alias(settings, data.lower())
+    return
 
 def check_alias(settings: "SettingParams", alias: str):
     logger.info(f"Checking alias {alias}")
@@ -728,177 +776,284 @@ def update_users_from_file(settings: "SettingParams"):
             logger.error(f"{type(e).__name__} at line {e.__traceback__.tb_lineno} of {__file__}: {e}")
 
 def save_user_data_prompt(settings: "SettingParams"):
-    answer = input("Enter target user key in format: id:<UID> or userName:<SCIM_USER_NAME> or <API_360_NICKNAME> or <API_360_ALIAS> (empty string to exit): ")
-    if not answer.strip():
-        return
-    if ":" in answer:
-        key, value = answer.split(":")
-        key = key.strip()
-        value = value.strip().lower()
-        if key.lower() not in ["id", "username"]:
-            logger.error(f"Invalid key {key}. Please enter id:<UID> or userName:<SCIM_USER_NAME>.")
-            return
-    else:
-        key = "nickname"
-        value = answer.lower()
-
-    if key == "id":
-        if not any(char.isdigit() for char in value):
-            logger.error(f"Invalid UID {value} (Must be numeric value). Please enter valid UID.")
-            return
-
-    logger.info(f"Saving user data for key {key} and value {value}.")
-    users = get_all_api360_users(settings)
-    scim_users = get_all_scim_users(settings)  
-    if not users:
-        logger.error("No users found from API 360 calls. Check your settings.")
-        return
-    if not scim_users:
-        logger.error("No users found from SCIM calls. Check your settings.")
-        return
-    target_user = None
-    target_scim_user = None
-    if key in ["id", "nickname"]:
-        for user in users:
-            if key == "id":
-                if user["id"] == value:
-                    target_user = user
-                    break
-            elif key == "nickname":
-                if user["nickname"] == value or value in user["aliases"]:
-                    target_user = user
-                    break
-    elif key.lower() == "username":
-        for user in scim_users:
-            if user["userName"] == value:
-                target_scim_user = user
+    while True:
+        answer = input("Enter target user key in format: id:<UID> or userName:<SCIM_USER_NAME> or <API_360_NICKNAME> or <API_360_ALIAS> (empty string to exit): ")
+        if not answer.strip():
+            break
+        if ":" in answer:
+            key, value = answer.split(":")
+            key = key.strip()
+            value = value.strip().lower()
+            if key.lower() not in ["id", "username"]:
+                logger.error(f"Invalid key {key}. Please enter id:<UID> or userName:<SCIM_USER_NAME>.")
                 break
-    
-    if target_user:
-        target_scim_user = [user for user in scim_users if user["id"] == target_user["id"]][0]
-    elif target_scim_user:
-        target_user = [user for user in users if user["id"] == target_scim_user["id"]][0]
-    else:
-        logger.error(f"No user found for key {key} and value {value}.")
-        return
-    
-    logger.info("\n")
-    logger.info("--------------------------------------------------------")
-    logger.info(f'API 360 attributes for user with id: {target_user["id"]}')
-    logger.info("--------------------------------------------------------")
-    for k, v in target_user.items():
-        if k.lower() == "contacts":
-            logger.info("Contacts")
-            for l in v: 
-                for k1, v1 in l.items():  
-                    logger.info(f" - {k1}: {v1}")
-                logger.info(" -")
-        elif k.lower() == "aliases":
-            logger.info("Aliases")
-            for l in v:
-                logger.info(f" - {l}")
-        elif k.lower() == "name":
-            logger.info("Name")
-            for k1, v1 in v.items():  
-                logger.info(f" - {k1}: {v1}")
         else:
-            logger.info(f"{k}: {v}")
-    logger.info("--------------------------------------------------------")
-    logger.info("--------------------------------------------------------")
-    logger.info(f'SCIM attributes for user with id: {target_scim_user["id"]}')
-    logger.info("--------------------------------------------------------")
-    for k, v in target_scim_user.items():
-        if k.lower() == "emails":
-            logger.info("Emails")
-            for l in v:
-                for k1, v1 in l.items():   
-                    logger.info(f" - {k1}: {v1}")
-                logger.info(" -")
-        elif k.lower() == "metadata":
-            logger.info("Metadata")
-            for k1, v1 in v.items():  
-                logger.info(f" - {k1}: {v1}")
-        elif k.lower() == "name":
-            logger.info("name")
-            for k1, v1 in v.items():  
-                logger.info(f" - {k1}: {v1}")
-        elif k.lower() == "meta":
-            logger.info("meta")
-            for k1, v1 in v.items():  
-                logger.info(f" - {k1}: {v1}")
-        elif k.lower() == "phonenumbers":
-            logger.info("phoneNumbers")
-            for l in v:
-                for k1, v1 in l.items():  
-                    logger.info(f" - {k1}: {v1}")
-                logger.info(" -")
-        elif k == "urn:ietf:params:scim:schemas:extension:yandex360:2.0:User":
-            logger.info("aliases")
-            for l in v["aliases"]:
-                for k1, v1 in l.items():
-                    logger.info(f" - {k1}: {v1}")
+            key = "nickname"
+            value = answer.lower()
+
+        if key == "id":
+            if not any(char.isdigit() for char in value):
+                logger.error(f"Invalid UID {value} (Must be numeric value). Please enter valid UID.")
+                break
+
+        logger.info(f"Saving user data for key {key} and value {value}.")
+        users = get_all_api360_users(settings)
+        scim_users = get_all_scim_users(settings)  
+        if not users:
+            logger.error("No users found from API 360 calls. Check your settings.")
+            break
+        if not scim_users:
+            logger.error("No users found from SCIM calls. Check your settings.")
+            break
+        target_user = None
+        target_scim_user = None
+        if key in ["id", "nickname"]:
+            for user in users:
+                if key == "id":
+                    if user["id"] == value:
+                        target_user = user
+                        break
+                elif key == "nickname":
+                    if user["nickname"] == value or value in user["aliases"]:
+                        target_user = user
+                        break
+        elif key.lower() == "username":
+            for user in scim_users:
+                if user["userName"] == value:
+                    target_scim_user = user
+                    break
+        
+        if target_user:
+            target_scim_user = [user for user in scim_users if user["id"] == target_user["id"]][0]
+        elif target_scim_user:
+            target_user = [user for user in users if user["id"] == target_scim_user["id"]][0]
         else:
-            logger.info(f"{k}: {v}")
-    logger.info("--------------------------------------------------------")
-    logger.info("\n")
-    with open(f"{target_user['nickname']}.txt", "w", encoding="utf-8") as f:
-        f.write(f'API 360 attributes for user with id: {target_user["id"]}\n')
-        f.write("--------------------------------------------------------\n")
+            logger.error(f"No user found for key {key} and value {value}.")
+            break
+        
+        logger.info("\n")
+        logger.info("--------------------------------------------------------")
+        logger.info(f'API 360 attributes for user with id: {target_user["id"]}')
+        logger.info("--------------------------------------------------------")
         for k, v in target_user.items():
             if k.lower() == "contacts":
-                f.write("Contacts\n")
+                logger.info("Contacts")
                 for l in v: 
                     for k1, v1 in l.items():  
-                        f.write(f" - {k1}: {v1}\n")
-                    f.write(" -\n")
+                        logger.info(f" - {k1}: {v1}")
+                    logger.info(" -")
             elif k.lower() == "aliases":
-                f.write("Aliases\n")
+                logger.info("Aliases")
                 for l in v:
-                    f.write(f" - {l}\n")
+                    logger.info(f" - {l}")
             elif k.lower() == "name":
-                f.write("Name\n")
+                logger.info("Name")
                 for k1, v1 in v.items():  
-                    f.write(f" - {k1}: {v1}\n")
+                    logger.info(f" - {k1}: {v1}")
             else:
-                f.write(f"{k}: {v}\n")
-        f.write("--------------------------------------------------------\n")
-        f.write("--------------------------------------------------------\n")
-        f.write(f'SCIM attributes for user with id: {target_scim_user["id"]}\n')
-        f.write("--------------------------------------------------------\n")
+                logger.info(f"{k}: {v}")
+        logger.info("--------------------------------------------------------")
+        logger.info("--------------------------------------------------------")
+        logger.info(f'SCIM attributes for user with id: {target_scim_user["id"]}')
+        logger.info("--------------------------------------------------------")
         for k, v in target_scim_user.items():
             if k.lower() == "emails":
-                f.write("Emails\n")
+                logger.info("Emails")
                 for l in v:
                     for k1, v1 in l.items():   
-                        f.write(f" - {k1}: {v1}\n")
-                    f.write(" -\n")
+                        logger.info(f" - {k1}: {v1}")
+                    logger.info(" -")
             elif k.lower() == "metadata":
-                f.write("Metadata\n")
+                logger.info("Metadata")
                 for k1, v1 in v.items():  
-                    f.write(f" - {k1}: {v1}\n")
+                    logger.info(f" - {k1}: {v1}")
             elif k.lower() == "name":
-                f.write("name\n")
+                logger.info("name")
                 for k1, v1 in v.items():  
-                    f.write(f" - {k1}: {v1}\n")
+                    logger.info(f" - {k1}: {v1}")
             elif k.lower() == "meta":
-                f.write("meta\n")
+                logger.info("meta")
                 for k1, v1 in v.items():  
-                    f.write(f" - {k1}: {v1}\n")
+                    logger.info(f" - {k1}: {v1}")
             elif k.lower() == "phonenumbers":
-                f.write("phoneNumbers\n")
+                logger.info("phoneNumbers")
                 for l in v:
                     for k1, v1 in l.items():  
-                        f.write(f" - {k1}: {v1}\n")
-                    f.write(" -\n")
+                        logger.info(f" - {k1}: {v1}")
+                    logger.info(" -")
             elif k == "urn:ietf:params:scim:schemas:extension:yandex360:2.0:User":
-                f.write("aliases")
+                logger.info("aliases")
                 for l in v["aliases"]:
                     for k1, v1 in l.items():
-                        f.write(f" - {k1}: {v1}\n")
+                        logger.info(f" - {k1}: {v1}")
             else:
-                f.write(f"{k}: {v}\n")
-        f.write("--------------------------------------------------------\n")
-    logger.info(f"User attributes saved to file: {target_user['nickname']}.txt")
+                logger.info(f"{k}: {v}")
+        logger.info("--------------------------------------------------------")
+        logger.info("\n")
+        with open(f"{target_user['nickname']}.txt", "w", encoding="utf-8") as f:
+            f.write(f'API 360 attributes for user with id: {target_user["id"]}\n')
+            f.write("--------------------------------------------------------\n")
+            for k, v in target_user.items():
+                if k.lower() == "contacts":
+                    f.write("Contacts\n")
+                    for l in v: 
+                        for k1, v1 in l.items():  
+                            f.write(f" - {k1}: {v1}\n")
+                        f.write(" -\n")
+                elif k.lower() == "aliases":
+                    f.write("Aliases\n")
+                    for l in v:
+                        f.write(f" - {l}\n")
+                elif k.lower() == "name":
+                    f.write("Name\n")
+                    for k1, v1 in v.items():  
+                        f.write(f" - {k1}: {v1}\n")
+                else:
+                    f.write(f"{k}: {v}\n")
+            f.write("--------------------------------------------------------\n")
+            f.write("--------------------------------------------------------\n")
+            f.write(f'SCIM attributes for user with id: {target_scim_user["id"]}\n')
+            f.write("--------------------------------------------------------\n")
+            for k, v in target_scim_user.items():
+                if k.lower() == "emails":
+                    f.write("Emails\n")
+                    for l in v:
+                        for k1, v1 in l.items():   
+                            f.write(f" - {k1}: {v1}\n")
+                        f.write(" -\n")
+                elif k.lower() == "metadata":
+                    f.write("Metadata\n")
+                    for k1, v1 in v.items():  
+                        f.write(f" - {k1}: {v1}\n")
+                elif k.lower() == "name":
+                    f.write("name\n")
+                    for k1, v1 in v.items():  
+                        f.write(f" - {k1}: {v1}\n")
+                elif k.lower() == "meta":
+                    f.write("meta\n")
+                    for k1, v1 in v.items():  
+                        f.write(f" - {k1}: {v1}\n")
+                elif k.lower() == "phonenumbers":
+                    f.write("phoneNumbers\n")
+                    for l in v:
+                        for k1, v1 in l.items():  
+                            f.write(f" - {k1}: {v1}\n")
+                        f.write(" -\n")
+                elif k == "urn:ietf:params:scim:schemas:extension:yandex360:2.0:User":
+                    f.write("aliases")
+                    for l in v["aliases"]:
+                        for k1, v1 in l.items():
+                            f.write(f" - {k1}: {v1}\n")
+                else:
+                    f.write(f"{k}: {v}\n")
+            f.write("--------------------------------------------------------\n")
+        logger.info(f"User attributes saved to file: {target_user['nickname']}.txt")
+    return
+
+def save_group_data_prompt(settings: "SettingParams"):
+    while True:
+        answer = input("Enter group alias to get group information (empty string to exit): ")
+        if not answer.strip():
+            break
+        
+        alias = answer.strip()
+        logger.info(f"Searching for group with alias: {alias}")
+        
+        groups = get_all_groups(settings)
+        if not groups:
+            logger.error("No groups found from API 360 calls. Check your settings.")
+            break
+        
+        logger.info(f"{len(groups)} groups found.")
+        target_group = find_group_by_alias(groups, alias)
+        
+        if not target_group:
+            logger.error(f"No group found with alias '{alias}'.")
+            break
+        
+        logger.info(f"Group found: {target_group['name']} (ID: {target_group['id']})")
+        
+        # Get users to map IDs to nicknames
+        users = get_all_api360_users(settings)
+        user_id_to_nickname = {}
+        if users:
+            for user in users:
+                user_id_to_nickname[user['id']] = user.get('nickname', 'Unknown')
+        
+        # Create mapping for group IDs to group names
+        group_id_to_name = {}
+        for group in groups:
+            group_id_to_name[str(group['id'])] = group.get('name', 'Unknown')
+        
+        # Display group attributes in console
+        logger.info("\n")
+        logger.info("--------------------------------------------------------")
+        logger.info(f'Group attributes for group with id: {target_group["id"]}')
+        logger.info("--------------------------------------------------------")
+        
+        for k, v in target_group.items():
+            if k.lower() == "aliases":
+                logger.info("Aliases:")
+                for alias_item in v:
+                    logger.info(f" - {alias_item}")
+            elif k.lower() == "members":
+                logger.info("Members:")
+                for member in v:
+                    member_id = member.get('id', '')
+                    member_type = member.get('type', '')
+                    if member_type == 'group':
+                        group_name = group_id_to_name.get(str(member_id), 'Unknown')
+                        logger.info(f" - type: {member_type}, id: {member_id} ({group_name})")
+                    else:
+                        nickname = user_id_to_nickname.get(member_id, 'Unknown')
+                        logger.info(f" - type: {member_type}, id: {member_id} ({nickname})")
+            elif k.lower() == "memberof":
+                logger.info("Member of:")
+                for member_of in v:
+                    # member_of should be a group ID, find the group name
+                    group_name = group_id_to_name.get(str(member_of), 'Unknown')
+                    logger.info(f" - {member_of} ({group_name})")
+            else:
+                logger.info(f"{k}: {v}")
+        
+        logger.info("--------------------------------------------------------")
+        logger.info("\n")
+        
+        # Save to file
+        filename = f"group_{target_group['id']}.txt"
+        with open(filename, "w", encoding="utf-8") as f:
+            f.write(f'Group attributes for group with id: {target_group["id"]}\n')
+            f.write("--------------------------------------------------------\n")
+            
+            for k, v in target_group.items():
+                if k.lower() == "aliases":
+                    f.write("Aliases:\n")
+                    for alias_item in v:
+                        f.write(f" - {alias_item}\n")
+                elif k.lower() == "members":
+                    f.write("Members:\n")
+                    for member in v:
+                        member_id = member.get('id', '')
+                        member_type = member.get('type', '')
+                        if member_type == 'group':
+                            group_name = group_id_to_name.get(str(member_id), 'Unknown')
+                            f.write(f" - type: {member_type}, id: {member_id} ({group_name})\n")
+                        else:
+                            nickname = user_id_to_nickname.get(member_id, 'Unknown')
+                            f.write(f" - type: {member_type}, id: {member_id} ({nickname})\n")
+                elif k.lower() == "memberof":
+                    f.write("Member of:\n")
+                    for member_of in v:
+                        # member_of should be a group ID, find the group name
+                        group_name = group_id_to_name.get(str(member_of), 'Unknown')
+                        f.write(f" - {member_of} ({group_name})\n")
+                else:
+                    f.write(f"{k}: {v}\n")
+            
+            f.write("--------------------------------------------------------\n")
+        
+        logger.info(f"Group attributes saved to file: {filename}")
+    return
 
 def write_to_file(settings: "SettingParams"):
     users = get_all_api360_users(settings)
