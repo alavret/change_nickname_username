@@ -795,6 +795,9 @@ def save_user_data_prompt(settings: "SettingParams"):
             if not any(char.isdigit() for char in value):
                 logger.error(f"Invalid UID {value} (Must be numeric value). Please enter valid UID.")
                 break
+            if not value.startswith("113"):
+                logger.error(f"Invalid UID {value} (Must be starts with 113). Please enter valid UID.")
+                break
 
         logger.info(f"Saving user data for key {key} and value {value}.")
         users = get_all_api360_users(settings)
