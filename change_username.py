@@ -44,6 +44,7 @@ class SettingParams:
     new_login_default_format : str
     default_email_output_file : str
     default_email_input_file : str
+    skip_scim_api_call : bool
 
 def get_settings():
     exit_flag = False
@@ -58,7 +59,7 @@ def get_settings():
         org_id = os.environ.get("ORG_ID_ARG"),
         default_email_output_file = os.environ.get("DEFAULT_EMAIL_OUTPUT_FILE_ARG"),
         default_email_input_file = os.environ.get("DEFAULT_EMAIL_INPUT_FILE_ARG"),
-
+        skip_scim_api_call = False
     )
 
     if not settings.scim_token:
@@ -90,15 +91,20 @@ def get_settings():
         logger.error("ORG_ID_ARG is not set")
         exit_flag = True
 
-    if not check_scim_token(settings.scim_token, settings.domain_id):
-        logger.info("SCIM_TOKEN_ARG is not valid")
-        scim_token_bad = True
+    if not (scim_token_bad or exit_flag):
+        if not check_scim_token(settings.scim_token, settings.domain_id):
+            logger.info("SCIM_TOKEN_ARG is not valid")
+            scim_token_bad = True
 
-    if not check_oauth_token(settings.oauth_token, settings.org_id):
-        logger.info("OAUTH_TOKEN_ARG is not valid")
-        oauth_token_bad = True
+    if not (oauth_token_bad or exit_flag):
+        if not check_oauth_token(settings.oauth_token, settings.org_id):
+            logger.info("OAUTH_TOKEN_ARG is not valid")
+            oauth_token_bad = True
 
-    if scim_token_bad and oauth_token_bad:
+    if scim_token_bad:
+        settings.skip_scim_api_call = True
+
+    if oauth_token_bad:
         exit_flag = True
     
     if exit_flag:
@@ -168,7 +174,7 @@ def parse_arguments():
     )
     return parser.parse_args()
 
-def interactive_mode(settings: "SettingParams"):
+def change_SCIM_username_manually(settings: "SettingParams"):
     """Интерактивный режим для ввода параметров."""
 
     value = input("Enter old and new value of userName, separated by space: ").strip()
@@ -184,7 +190,7 @@ def interactive_mode(settings: "SettingParams"):
     single_mode(settings, old_value, new_value)
 
 def single_mode(settings: "SettingParams", old_value, new_value):
-    users = users = get_all_scim_users(settings)
+    users  = get_all_scim_users(settings)
     if users:
         old_user = next((item for item in users if item["userName"] == old_value.lower()), None)
         if not old_user:
@@ -246,20 +252,25 @@ def main(settings: "SettingParams"):
 
         # Подсчёт переданных параметров
         provided_params = sum(1 for arg in [old_value, new_value, confirm] if arg is not None)
-        interactive_mode = False
-        # Проверка количества параметров
-        if provided_params < 3:
-            logger.info("There is only one command line argument, start interactive mode.")
-            interactive_mode = True
-        elif provided_params == 3 and old_value is not None and new_value is not None and attribute is not None:
-            confirm = confirm if confirm else "no"
-        elif provided_params == 4:
-            pass
-        else:
-            logger.error("Wrong agruments count, start interactive mode.")
-            interactive_mode = True
 
-        logger.debug(f"Command line arguments: old={old_value}, new={new_value}, attribute={attribute}, confirm={confirm}")
+        if settings.skip_scim_api_call:
+            logger.info("No SCIM config found. Starting interactive mode.")
+            interactive_mode = True
+        else:
+            interactive_mode = False
+            # Проверка количества параметров
+            if provided_params < 3:
+                logger.info("There is only one command line argument, start interactive mode.")
+                interactive_mode = True
+            elif provided_params == 3 and old_value is not None and new_value is not None and attribute is not None:
+                confirm = confirm if confirm else "no"
+            elif provided_params == 4:
+                pass
+            else:
+                logger.error("Wrong agruments count, start interactive mode.")
+                interactive_mode = True
+
+            logger.debug(f"Command line arguments: old={old_value}, new={new_value}, attribute={attribute}, confirm={confirm}")
 
         if interactive_mode:
             main_menu(settings)
@@ -294,63 +305,154 @@ def main_menu(settings: "SettingParams"):
 
     while True:
         print("\n")
-        print("-------------------------- Config params ---------------------------")
-        print(f'New loginName format: {settings.new_login_default_format}')
-        print("--------------------------------------------------------------------")
-        print("\n")
-
         print("Select option:")
-        print("1. Set new loginName format (default: alias@domail.tld).")
-        print("2. Check alias for users.")
-        print("3. Save user attributes to file.")
-        print("4. Create SCIM data file for modification in next step.")
-        print("5. Use users file to change SCIM loginName of users.")
-        print("6. Enter old and new value of userName manually and confirm renaming.")
-        print("7. Change nickname of single user.")
-        print("8. Dowanload all users to file (SCIM и API).")
-        print("A. Create file for default email modification.")
-        print("B. Update default email from file.")
-        print("C. Save group attributes to file.")
-        
-        print("0. Exit")
+        print("1. Work with SCIM userName attribute or with API 360 nickname attribute.")
+        print("2. Get user info.")
+        print("3. Get group info.")
+        print("4. Work with email settings.")
 
-        choice = input("Enter your choice (0-9, A-C): ")
+        print("0. Exit")
+        choice = input("Enter your choice (0-4): ")
 
         if choice == "0":
             print("Goodbye!")
             break
         elif choice == "1":
+            submenu_1(settings)
+        elif choice == "2":
+            submenu_2(settings)
+        elif choice == "3":
+            submenu_3(settings)
+        elif choice == "4":
+            submenu_4(settings)
+        else:
+            print("Invalid choice. Please try again.")
+
+
+
+def submenu_1(settings: "SettingParams"):
+    while True:
+        print("\n")
+        print("=== Work with SCIM userName attribute or with API 360 nickname attribute ===")
+        print("------------------------------ Config params -------------------------------")
+        print(f'New loginName format: {settings.new_login_default_format}')
+        print("----------------------------------------------------------------------------")
+        print("\n")
+        print("Select option:")
+        print("1. Set new SCIM userName format (default: alias@domail.tld).")
+        print("2. Create SCIM data file for modification in next step.")
+        print("3. Use users file to change SCIM loginName of users.")
+        print("4. Enter old and new value of userName manually and confirm renaming.")
+        print("5. Change nickname of single user.")
+        print("0. Back to main menu.")
+
+        choice = input("Enter your choice (0-9, A-C): ")
+
+        if choice == "0":
+            break
+        elif choice == "1":
             print('\n')
             set_new_loginName_format(settings)
         elif choice == "2":
-            print('\n')
-            check_alias_prompt(settings)
+            if settings.skip_scim_api_call:
+                logger.info("No SCIM config found. Skip action.")
+            else:
+                print('\n')
+                create_SCIM_userName_file(settings)
         elif choice == "3":
-            print('\n')
-            save_user_data_prompt(settings)    
+            if settings.skip_scim_api_call:
+                logger.info("No SCIM config found. Skip action.")
+            else:
+                print('\n')
+                update_users_from_SCIM_userName_file(settings)
         elif choice == "4":
-            print('\n')
-            download_users_to_file(settings)
+            if settings.skip_scim_api_call:
+                logger.info("No SCIM config found. Skip action.")
+            else:
+                print('\n')
+                change_SCIM_username_manually(settings)
         elif choice == "5":
             print('\n')
-            update_users_from_file(settings)
-        elif choice == "6":
-            print('\n')
-            interactive_mode(settings)
-        elif choice == "7":
-            print('\n')
             change_nickname_prompt(settings)
-        elif choice == "8":
-            write_to_file(settings)
-        elif choice.upper() == "A":
-            default_email_create_file(settings)
-        elif choice.upper() == "B":
-            default_email_update_from_file(settings)
-        elif choice.upper() == "C":
+        else:
+            print("Invalid choice. Please try again.")
+    return
+
+def submenu_2(settings: "SettingParams"):
+    while True:
+        print("\n")
+        print("============================== Get user info ===============================")
+        #print("\n")
+        print("Select option:")
+        print("1. Check alias for user.")
+        print("2. Download all users to file (SCIM и API) protocols.")
+        print("3. Show user attributes and save their to file.")
+        print("0. Back to main menu.")
+
+        choice = input("Enter your choice (0-3): ")
+
+        if choice == "0":
+            break
+        elif choice == "1":
+            print('\n')
+            check_alias_prompt(settings)
+        elif choice == "2":
+            print('\n')
+            download_users_attrib_to_file(settings)
+        elif choice == "3":
+            print('\n')
+            show_user_attributes(settings)
+        else:
+            print("Invalid choice. Please try again.")
+
+    return
+
+def submenu_3(settings: "SettingParams"):
+    while True:
+        print("\n")
+        print("============================== Get group info ===============================")
+        #print("\n")
+        print("Select option:")
+        print("1. Show group attributes and save their to file.")
+        print("0. Back to main menu.")
+
+        choice = input("Enter your choice (0-3): ")
+
+        if choice == "0":
+            break
+        elif choice == "1":
             print('\n')
             save_group_data_prompt(settings)
         else:
             print("Invalid choice. Please try again.")
+
+    return
+
+
+def submenu_4(settings: "SettingParams"):
+    while True:
+        print("\n")
+        print("====================== Work with email settings =============================")
+        #print("\n")
+        print("Select option:")
+        print("1. Create file for default email modification.")
+        print("2. Update default email from file.")
+        print("0. Back to main menu.")
+
+        choice = input("Enter your choice (0-3): ")
+
+        if choice == "0":
+            break
+        elif choice == "1":
+            print('\n')
+            default_email_create_file(settings)
+        elif choice == "2":
+            print('\n')
+            default_email_update_from_file(settings)
+        else:
+            print("Invalid choice. Please try again.")
+
+    return
 
 def set_new_loginName_format(settings: "SettingParams"):
     answer = input("Enter format of new userLogin name (space to use default format alias@domain.tld):\n")
@@ -448,6 +550,11 @@ def get_default_email(settings: "SettingParams", userId: str):
     return data
 
 def get_all_scim_users(settings: "SettingParams"):
+    
+    if settings.skip_scim_api_call:
+        logger.info("No SCIM config found. Skip getting all users of the organisation from SCIM action.")
+        return []
+    
     logger.info("Getting all users of the organisation from SCIM...")
     users = []
     headers = {
@@ -671,7 +778,7 @@ def remove_email_in_scim(user_id: str, alias: str):
         logger.error(f"{type(e).__name__} at line {e.__traceback__.tb_lineno} of {__file__}: {e}")
 
 
-def download_users_to_file(settings: "SettingParams", onlyList = False):
+def create_SCIM_userName_file(settings: "SettingParams", onlyList = False):
 
     users = get_all_scim_users(settings)
 
@@ -693,7 +800,7 @@ def download_users_to_file(settings: "SettingParams", onlyList = False):
         return []
     return users
 
-def update_users_from_file(settings: "SettingParams"):
+def update_users_from_SCIM_userName_file(settings: "SettingParams"):
     user_for_change = []
     all_users = []
     with open(settings.users_file, "r", encoding="utf-8") as f:
@@ -775,7 +882,7 @@ def update_users_from_file(settings: "SettingParams"):
         except Exception as e:
             logger.error(f"{type(e).__name__} at line {e.__traceback__.tb_lineno} of {__file__}: {e}")
 
-def save_user_data_prompt(settings: "SettingParams"):
+def show_user_attributes(settings: "SettingParams"):
     while True:
         answer = input("Enter target user key in format: id:<UID> or userName:<SCIM_USER_NAME> or <API_360_NICKNAME> or <API_360_ALIAS> (empty string to exit): ")
         if not answer.strip():
@@ -1058,7 +1165,7 @@ def save_group_data_prompt(settings: "SettingParams"):
         logger.info(f"Group attributes saved to file: {filename}")
     return
 
-def write_to_file(settings: "SettingParams"):
+def download_users_attrib_to_file(settings: "SettingParams"):
     users = get_all_api360_users(settings)
     scim_users = get_all_scim_users(settings)  
     if not users:
