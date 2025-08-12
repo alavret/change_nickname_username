@@ -1,3 +1,4 @@
+from unittest import result
 from dotenv import load_dotenv
 import requests
 import logging
@@ -11,9 +12,11 @@ import time
 from os import environ
 import argparse
 import csv
+import re
 
 DEFAULT_360_SCIM_API_URL = "https://{domain_id}.scim-api.passport.yandex.net/"
 DEFAULT_360_API_URL = "https://api360.yandex.net"
+DEFAULT_360_API_URL_V2 = "https://cloud-api.yandex.net/v1/admin/org"
 ITEMS_PER_PAGE = 100
 MAX_RETRIES = 3
 LOG_FILE = "change_scim_user_name.log"
@@ -45,21 +48,23 @@ class SettingParams:
     default_email_output_file : str
     default_email_input_file : str
     skip_scim_api_call : bool
+    target_group : dict
 
 def get_settings():
     exit_flag = False
     scim_token_bad = False
     oauth_token_bad = False
     settings = SettingParams (
-        scim_token = os.environ.get("SCIM_TOKEN_ARG"),
-        domain_id = os.environ.get("SCIM_DOMAIN_ID_ARG"),
+        scim_token = os.environ.get("SCIM_TOKEN_ARG",""),
+        domain_id = os.environ.get("SCIM_DOMAIN_ID_ARG",""),
         users_file = os.environ.get("USERS_FILE_ARG"),
         new_login_default_format = os.environ.get("NEW_LOGIN_DEFAULT_FORMAT_ARG"),
         oauth_token = os.environ.get("OAUTH_TOKEN_ARG"),
         org_id = os.environ.get("ORG_ID_ARG"),
         default_email_output_file = os.environ.get("DEFAULT_EMAIL_OUTPUT_FILE_ARG"),
         default_email_input_file = os.environ.get("DEFAULT_EMAIL_INPUT_FILE_ARG"),
-        skip_scim_api_call = False
+        skip_scim_api_call = False,
+        target_group = {},
     )
 
     if not settings.scim_token:
@@ -68,7 +73,7 @@ def get_settings():
 
     if settings.domain_id.strip() == "":
         logger.error("SCIM_DOMAIN_ID_ARG is not set")
-        exit_flag = True
+        scim_token_bad = True
 
     if not settings.users_file:
         logger.error("USERS_FILE_ARG is not set")
@@ -308,7 +313,7 @@ def main_menu(settings: "SettingParams"):
         print("Select option:")
         print("1. Work with SCIM userName attribute or with API 360 nickname attribute.")
         print("2. Get user info.")
-        print("3. Get group info.")
+        print("3. Get group info and manage send permission.")
         print("4. Work with email settings.")
 
         print("0. Exit")
@@ -341,12 +346,12 @@ def submenu_1(settings: "SettingParams"):
         print("Select option:")
         print("1. Set new SCIM userName format (default: alias@domail.tld).")
         print("2. Create SCIM data file for modification in next step.")
-        print("3. Use users file to change SCIM loginName of users.")
+        print("3. Use users file to change SCIM userName of users.")
         print("4. Enter old and new value of userName manually and confirm renaming.")
         print("5. Change nickname of single user.")
         print("0. Back to main menu.")
 
-        choice = input("Enter your choice (0-9, A-C): ")
+        choice = input("Enter your choice (0-5): ")
 
         if choice == "0":
             break
@@ -414,6 +419,8 @@ def submenu_3(settings: "SettingParams"):
         #print("\n")
         print("Select option:")
         print("1. Show group attributes and save their to file.")
+        print("2. Show approve senders for group.")
+        print("3. Manage approve senders for group.")
         print("0. Back to main menu.")
 
         choice = input("Enter your choice (0-3): ")
@@ -423,6 +430,11 @@ def submenu_3(settings: "SettingParams"):
         elif choice == "1":
             print('\n')
             save_group_data_prompt(settings)
+        elif choice == "2":
+            print('\n')
+            show_mailing_list_permissions(settings)
+        elif choice == "3":
+            subsubmenu_30(settings)
         else:
             print("Invalid choice. Please try again.")
 
@@ -439,7 +451,7 @@ def submenu_4(settings: "SettingParams"):
         print("2. Update default email from file.")
         print("0. Back to main menu.")
 
-        choice = input("Enter your choice (0-3): ")
+        choice = input("Enter your choice (0-2): ")
 
         if choice == "0":
             break
@@ -449,6 +461,44 @@ def submenu_4(settings: "SettingParams"):
         elif choice == "2":
             print('\n')
             default_email_update_from_file(settings)
+        else:
+            print("Invalid choice. Please try again.")
+
+    return
+
+def subsubmenu_30(settings: "SettingParams"):
+    while True:
+        print("\n")
+        print("====================== Manage group send permissions =============================")
+        print("------------------------------ Current params -------------------------------")
+        print(f'Target group Name - {settings.target_group.get("name","")}')
+        print(f'Target group ID - {settings.target_group.get("id","")}')
+        print(f'Target group emailId - {settings.target_group.get("emailId","")}')
+        print("----------------------------------------------------------------------------")
+        #print("\n")
+        print("Select option:")
+        print("1. Set target group.")
+        print("2. Add users to allow list.")
+        print("3. Remove users from allow list.")
+        print("4. Grand all users send permission.")
+        print("0. Back to main menu.")
+
+        choice = input("Enter your choice (0-4): ")
+
+        if choice == "0":
+            break
+        elif choice == "1":
+            print('\n')
+            send_perm_set_target_group(settings)
+        elif choice == "2":
+            print('\n')
+            send_perm_add_users_to_allow_list_prompt(settings)
+        elif choice == "3":
+            print('\n')
+            #send_perm_remove_users_from_allow_list(settings)
+        elif choice == "4":
+            print('\n')
+            #send_perm_grand_all_users(settings)
         else:
             print("Invalid choice. Please try again.")
 
@@ -505,23 +555,32 @@ def get_all_groups(settings: "SettingParams"):
         return []
     return groups
 
-def find_group_by_alias(groups: list, alias: str):
+def find_group_by_param(groups: list, search_string: str, search_type: str ):
     """Find group by exact alias match, email prefix match, or partial group name match"""
+    logger.debug(f"Finding group by search string {search_string}...")
+    result = []  # noqa: F811
     for group in groups:
         # Check aliases
-        if alias in group.get('aliases', []):
-            return group
-        # Check email prefix (part before @)
-        email = group.get('email', '')
-        if email and '@' in email:
-            email_prefix = email.split('@')[0]
-            if email_prefix == alias:
-                return group
-        # Check group name (partial match, case-insensitive)
-        group_name = group.get('name', '')
-        if alias.lower() in group_name.lower():
-            return group
-    return None
+        if search_type == 'alias':
+            if search_string in group.get('aliases', []):
+                result.append(group)
+            # Check email prefix (part before @)
+            email = group.get('email', '')
+            if email and '@' in email:
+                email_prefix = email.split('@')[0]
+                if email_prefix == search_string:
+                    result.append(group)
+            # Check group name (partial match, case-insensitive)
+            group_name = group.get('name', '')
+            if search_string.lower() in group_name.lower():
+                result.append(group)
+        elif search_type == "id":
+            if search_string == str(group.get('id', '')):
+                result.append(group)
+        elif search_type == "uid":
+            if search_string == group.get('emailId', ''):
+                result.append(group)
+    return result
 
 def get_default_email(settings: "SettingParams", userId: str):
     logger.debug(f"Getting default email for user {userId}...")
@@ -813,7 +872,7 @@ def update_users_from_SCIM_userName_file(settings: "SettingParams"):
             temp = user.replace("\n","").strip()
             try:
                 uid, displayName, old_userName, new_userName = temp.split(";")
-                if not any(char.isdigit() for char in uid):
+                if not all(char.isdigit() for char in uid):
                     logger.info(f"Uid {uid} is not valid ({displayName}). Skipping.")   
                     continue
                 if not new_userName:
@@ -899,7 +958,7 @@ def show_user_attributes(settings: "SettingParams"):
             value = answer.lower()
 
         if key == "id":
-            if not any(char.isdigit() for char in value):
+            if not all(char.isdigit() for char in value):
                 logger.error(f"Invalid UID {value} (Must be numeric value). Please enter valid UID.")
                 break
             if not value.startswith("113"):
@@ -913,8 +972,9 @@ def show_user_attributes(settings: "SettingParams"):
             logger.error("No users found from API 360 calls. Check your settings.")
             break
         if not scim_users:
-            logger.error("No users found from SCIM calls. Check your settings.")
-            break
+            if not settings.skip_scim_api_call:
+                logger.error("No users found from SCIM calls. Check your settings.")
+                break
         target_user = None
         target_scim_user = None
         if key in ["id", "nickname"]:
@@ -934,7 +994,8 @@ def show_user_attributes(settings: "SettingParams"):
                     break
         
         if target_user:
-            target_scim_user = [user for user in scim_users if user["id"] == target_user["id"]][0]
+            if not settings.skip_scim_api_call:
+                target_scim_user = [user for user in scim_users if user["id"] == target_user["id"]][0]
         elif target_scim_user:
             target_user = [user for user in users if user["id"] == target_scim_user["id"]][0]
         else:
@@ -963,42 +1024,44 @@ def show_user_attributes(settings: "SettingParams"):
             else:
                 logger.info(f"{k}: {v}")
         logger.info("--------------------------------------------------------")
-        logger.info("--------------------------------------------------------")
-        logger.info(f'SCIM attributes for user with id: {target_scim_user["id"]}')
-        logger.info("--------------------------------------------------------")
-        for k, v in target_scim_user.items():
-            if k.lower() == "emails":
-                logger.info("Emails")
-                for l in v:
-                    for k1, v1 in l.items():   
+        if not settings.skip_scim_api_call:
+            logger.info("--------------------------------------------------------")
+            logger.info(f'SCIM attributes for user with id: {target_scim_user["id"]}')
+            logger.info("--------------------------------------------------------")
+            for k, v in target_scim_user.items():
+                if k.lower() == "emails":
+                    logger.info("Emails")
+                    for l in v:
+                        for k1, v1 in l.items():   
+                            logger.info(f" - {k1}: {v1}")
+                        logger.info(" -")
+                elif k.lower() == "metadata":
+                    logger.info("Metadata")
+                    for k1, v1 in v.items():  
                         logger.info(f" - {k1}: {v1}")
-                    logger.info(" -")
-            elif k.lower() == "metadata":
-                logger.info("Metadata")
-                for k1, v1 in v.items():  
-                    logger.info(f" - {k1}: {v1}")
-            elif k.lower() == "name":
-                logger.info("name")
-                for k1, v1 in v.items():  
-                    logger.info(f" - {k1}: {v1}")
-            elif k.lower() == "meta":
-                logger.info("meta")
-                for k1, v1 in v.items():  
-                    logger.info(f" - {k1}: {v1}")
-            elif k.lower() == "phonenumbers":
-                logger.info("phoneNumbers")
-                for l in v:
-                    for k1, v1 in l.items():  
+                elif k.lower() == "name":
+                    logger.info("name")
+                    for k1, v1 in v.items():  
                         logger.info(f" - {k1}: {v1}")
-                    logger.info(" -")
-            elif k == "urn:ietf:params:scim:schemas:extension:yandex360:2.0:User":
-                logger.info("aliases")
-                for l in v["aliases"]:
-                    for k1, v1 in l.items():
+                elif k.lower() == "meta":
+                    logger.info("meta")
+                    for k1, v1 in v.items():  
                         logger.info(f" - {k1}: {v1}")
-            else:
-                logger.info(f"{k}: {v}")
-        logger.info("--------------------------------------------------------")
+                elif k.lower() == "phonenumbers":
+                    logger.info("phoneNumbers")
+                    for l in v:
+                        for k1, v1 in l.items():  
+                            logger.info(f" - {k1}: {v1}")
+                        logger.info(" -")
+                elif k == "urn:ietf:params:scim:schemas:extension:yandex360:2.0:User":
+                    logger.info("aliases")
+                    for l in v["aliases"]:
+                        for k1, v1 in l.items():
+                            logger.info(f" - {k1}: {v1}")
+                else:
+                    logger.info(f"{k}: {v}")
+            logger.info("--------------------------------------------------------")
+
         logger.info("\n")
         with open(f"{target_user['nickname']}.txt", "w", encoding="utf-8") as f:
             f.write(f'API 360 attributes for user with id: {target_user["id"]}\n')
@@ -1021,79 +1084,107 @@ def show_user_attributes(settings: "SettingParams"):
                 else:
                     f.write(f"{k}: {v}\n")
             f.write("--------------------------------------------------------\n")
-            f.write("--------------------------------------------------------\n")
-            f.write(f'SCIM attributes for user with id: {target_scim_user["id"]}\n')
-            f.write("--------------------------------------------------------\n")
-            for k, v in target_scim_user.items():
-                if k.lower() == "emails":
-                    f.write("Emails\n")
-                    for l in v:
-                        for k1, v1 in l.items():   
+            if not settings.skip_scim_api_call:
+                f.write("--------------------------------------------------------\n")
+                f.write(f'SCIM attributes for user with id: {target_scim_user["id"]}\n')
+                f.write("--------------------------------------------------------\n")
+                for k, v in target_scim_user.items():
+                    if k.lower() == "emails":
+                        f.write("Emails\n")
+                        for l in v:
+                            for k1, v1 in l.items():   
+                                f.write(f" - {k1}: {v1}\n")
+                            f.write(" -\n")
+                    elif k.lower() == "metadata":
+                        f.write("Metadata\n")
+                        for k1, v1 in v.items():  
                             f.write(f" - {k1}: {v1}\n")
-                        f.write(" -\n")
-                elif k.lower() == "metadata":
-                    f.write("Metadata\n")
-                    for k1, v1 in v.items():  
-                        f.write(f" - {k1}: {v1}\n")
-                elif k.lower() == "name":
-                    f.write("name\n")
-                    for k1, v1 in v.items():  
-                        f.write(f" - {k1}: {v1}\n")
-                elif k.lower() == "meta":
-                    f.write("meta\n")
-                    for k1, v1 in v.items():  
-                        f.write(f" - {k1}: {v1}\n")
-                elif k.lower() == "phonenumbers":
-                    f.write("phoneNumbers\n")
-                    for l in v:
-                        for k1, v1 in l.items():  
+                    elif k.lower() == "name":
+                        f.write("name\n")
+                        for k1, v1 in v.items():  
                             f.write(f" - {k1}: {v1}\n")
-                        f.write(" -\n")
-                elif k == "urn:ietf:params:scim:schemas:extension:yandex360:2.0:User":
-                    f.write("aliases")
-                    for l in v["aliases"]:
-                        for k1, v1 in l.items():
+                    elif k.lower() == "meta":
+                        f.write("meta\n")
+                        for k1, v1 in v.items():  
                             f.write(f" - {k1}: {v1}\n")
-                else:
-                    f.write(f"{k}: {v}\n")
-            f.write("--------------------------------------------------------\n")
+                    elif k.lower() == "phonenumbers":
+                        f.write("phoneNumbers\n")
+                        for l in v:
+                            for k1, v1 in l.items():  
+                                f.write(f" - {k1}: {v1}\n")
+                            f.write(" -\n")
+                    elif k == "urn:ietf:params:scim:schemas:extension:yandex360:2.0:User":
+                        f.write("aliases")
+                        for l in v["aliases"]:
+                            for k1, v1 in l.items():
+                                f.write(f" - {k1}: {v1}\n")
+                    else:
+                        f.write(f"{k}: {v}\n")
+                f.write("--------------------------------------------------------\n")
         logger.info(f"User attributes saved to file: {target_user['nickname']}.txt")
     return
 
+def get_target_group_data_prompt(settings: "SettingParams", answer: str):
+    result = {}, []
+    
+    search_type = "alias"
+    if all(char.isdigit() for char in answer.strip()):
+        if len(answer.strip()) == 16 and answer.strip().startswith("113"):
+            search_type = "uid"
+        else:
+            search_type = "id"
+    
+    search_string = answer.strip()
+    logger.info(f"Searching for group for: {search_string}")
+    
+    groups = get_all_groups(settings)
+    if not groups:
+        logger.error("No groups found from API 360 calls. Check your settings.")
+        return result
+    
+    logger.info(f"{len(groups)} groups found.")
+    group_found = find_group_by_param(groups, search_string, search_type)
+    
+    if not group_found:
+        logger.error(f"No group found with search string '{search_string}'.")
+        return result
+
+    if len(group_found) > 1:
+        logger.info(f"Found multiple groups with search string '{search_string}'.")
+        for group in group_found:
+            logger.info(f" - {group['name']} (ID: {group['id']}, Email: {group['email']}, UID: {group['emailId']})")
+        logger.info("Specify more precise search criteria to find only one group'.")
+        return result
+    
+    target_group = group_found[0]
+    settings.target_group = target_group
+    logger.info(f"Group found: {target_group['name']} (ID: {target_group['id']}, Email: {target_group['email']}, UID: {target_group['emailId']})")
+    return target_group, groups
+        
 def save_group_data_prompt(settings: "SettingParams"):
+    users = []
+    user_id_to_nickname = {}
+
     while True:
-        answer = input("Enter group alias to get group information (empty string to exit): ")
+        
+        answer = input("Enter group alias, id or uid to get mailing list permissions (empty string to exit): ")
         if not answer.strip():
             break
         
-        alias = answer.strip()
-        logger.info(f"Searching for group with alias: {alias}")
-        
-        groups = get_all_groups(settings)
-        if not groups:
-            logger.error("No groups found from API 360 calls. Check your settings.")
-            break
-        
-        logger.info(f"{len(groups)} groups found.")
-        target_group = find_group_by_alias(groups, alias)
-        
+        target_group, groups = get_target_group_data_prompt(settings, answer)
         if not target_group:
-            logger.error(f"No group found with alias '{alias}'.")
-            break
-        
-        logger.info(f"Group found: {target_group['name']} (ID: {target_group['id']})")
-        
-        # Get users to map IDs to nicknames
-        users = get_all_api360_users(settings)
-        user_id_to_nickname = {}
-        if users:
-            for user in users:
-                user_id_to_nickname[user['id']] = user.get('nickname', 'Unknown')
+            continue
         
         # Create mapping for group IDs to group names
         group_id_to_name = {}
         for group in groups:
             group_id_to_name[str(group['id'])] = group.get('name', 'Unknown')
+
+        if not users:
+            users = get_all_api360_users(settings)
+            if users:
+                for user in users:
+                    user_id_to_nickname[user['id']] = user.get('nickname', 'Unknown')
         
         # Display group attributes in console
         logger.info("\n")
@@ -1164,6 +1255,100 @@ def save_group_data_prompt(settings: "SettingParams"):
         
         logger.info(f"Group attributes saved to file: {filename}")
     return
+
+def show_mailing_list_permissions(settings: "SettingParams"):
+    users = []
+    user_id_to_nickname = {}
+    while True:
+        answer = input("Enter group alias, id or uid to get mailing list permissions (empty string to exit): ")
+        if not answer.strip():
+            break
+        
+        target_group, groups = get_target_group_data_prompt(settings, answer)
+        if not target_group:
+            continue
+     
+        if not users:
+            users = get_all_api360_users(settings)
+            if users:
+                for user in users:
+                    user_id_to_nickname[user['id']] = user.get('nickname', 'Unknown')
+        
+        # Get mailing list permissions
+        permissions = get_mailing_list_permissions(settings, target_group['emailId'])
+        if permissions is None:
+            logger.error(f"Failed to get mailing list permissions for group {target_group['name']}")
+            continue
+        
+        # Display results in the specified format
+        group_name = target_group.get('name', 'Unknown')
+        group_id = target_group['id']
+        group_email = target_group.get('email', 'Unknown')
+        
+        logger.info("\n")
+        logger.info("--------------------------------------------------------")
+        logger.info(f'Group attributes for group with id: {target_group["id"]}')
+        logger.info("--------------------------------------------------------")
+        logger.info(f"name: {group_name}")
+        logger.info(f"id: {group_id}")
+        logger.info(f"email: {group_email}")
+        logger.info(f"emailId: {target_group.get('emailId', 'Unknown')}")
+        logger.info("Approved senders:")
+        
+        # Display subjects from API response
+        if 'grants' in permissions and 'items' in permissions['grants']:
+            for item in permissions['grants']['items']:
+                if 'subject' in item:
+                    subject = item['subject']
+                    subject_type = subject.get('type', 'unknown')
+                    subject_id = subject.get('id', 'null')
+                    if subject_type == 'user':
+                        subject_org = subject.get('org_id', 'unknown')
+                        if str(subject_org) == str(settings.org_id):
+                            nickname = user_id_to_nickname.get(str(subject_id), 'Unknown')
+                            logger.info(f" - type: {subject_type}, id: {subject_id} (nickname: {nickname})")
+                    elif subject_type == 'anonymous':
+                        logger.info(f" - type: {subject_type}")
+                    elif subject_type == 'organization':
+                        logger.info(f" - type: {subject_type}, org_id: {subject.get('org_id', '')}")
+                    else:
+                        logger.info(f" - type: {subject_type}, org_id: {subject.get('org_id', '')}, id: {subject.get('id', '')}")
+        else:
+            logger.info(" - No permission subjects found.")
+        logger.info("--------------------------------------------------------")
+        logger.info("\n")
+    return
+
+def get_mailing_list_permissions(settings: "SettingParams", group_id: str):
+    """Get mailing list permissions for a group using cloud-api.yandex.net API"""
+    logger.debug(f"Getting mailing list permissions for group {group_id}...")
+    
+    # The API endpoint from the documentation
+    url = f"https://cloud-api.yandex.net/v1/admin/org/{settings.org_id}/mail-lists/{group_id}/permissions"
+    headers = {"Authorization": f"OAuth {settings.oauth_token}"}
+    
+    try:
+        retries = 1
+        while True:
+            response = requests.get(url, headers=headers)
+            if response.status_code != HTTPStatus.OK.value:
+                logger.error(f"Error during GET request for group {group_id}: {response.status_code}. Error message: {response.text}")
+                if retries < MAX_RETRIES:
+                    logger.error(f"Retrying ({retries+1}/{MAX_RETRIES})")
+                    time.sleep(RETRIES_DELAY_SEC * retries)
+                    retries += 1
+                else:
+                    logger.error(f"Error. Getting mailing list permissions for group {group_id} failed.")
+                    return None
+            else:
+                data = response.json()
+                logger.debug(f"Successfully retrieved mailing list permissions for group {group_id}")
+                logger.debug(f"url - GET {url}")
+                logger.debug(f"Raw JSON -  {json.dumps(data)}")
+                return data
+    except requests.exceptions.RequestException as e:
+        logger.error(f"{type(e).__name__} at line {e.__traceback__.tb_lineno} of {__file__}: {e}")
+        return None
 
 def download_users_attrib_to_file(settings: "SettingParams"):
     users = get_all_api360_users(settings)
@@ -1388,6 +1573,131 @@ def default_email_update_from_file(settings: "SettingParams"):
                     break
         except Exception as e:
             logger.error(f"{type(e).__name__} at line {e.__traceback__.tb_lineno} of {__file__}: {e}")
+
+def send_perm_set_target_group(settings: "SettingParams"):
+    while True:
+        answer = input("Enter group alias, id or uid to get mailing list permissions (empty string to exit): ")
+        if not answer.strip():
+            break
+        
+        target_group, groups = get_target_group_data_prompt(settings, answer)
+        if not target_group:
+            continue
+        else:
+            logger.info(f"Target group set: {target_group['name']} ({target_group['id']}, {target_group['emailId']})")
+            break
+    return
+
+def send_perm_add_users_to_allow_list_prompt(settings: "SettingParams"):
+    while True:
+        answer = input("Enter users aliases or uid, separated by comma or space (empty string to exit): ")
+        if not answer.strip():
+            break
+
+        users = get_all_api360_users(settings)
+        if not users:
+            logger.info("No users found in Y360 organization.")
+            break
+
+        pattern = r'[;,\s]+'
+        search_users = re.split(pattern, answer)
+        users_to_add = []
+
+        for searched in search_users:
+            found_flag = False
+            if all(char.isdigit() for char in searched.strip()):
+                if len(searched.strip()) == 16 and searched.strip().startswith("113"):
+                    for user in users:
+                        if user["id"] == searched.strip():
+                            logger.debug(f"User found: {user['nickname']} ({user['id']})")
+                            users_to_add.append(user)
+                            found_flag = True
+                            break
+            else:
+                for user in users:
+                    if user["nickname"] == searched.lower().strip() or searched.lower().strip() in user["aliases"]:
+                        logger.debug(f"User found: {user['nickname']} ({user['id']})")
+                        users_to_add.append(user)
+                        found_flag = True
+                        break
+            if not found_flag:
+                logger.error(f"User {searched} not found in Y360 organization.")
+        
+        if not users_to_add:
+            logger.info("No users to add. Exiting.")
+            continue
+        if not settings.target_group:
+            logger.info("No target group set. Exiting.")
+            continue
+
+        send_perm_call_api(settings, users_to_add, "ADD")
+
+def send_perm_call_api(settings: "SettingParams", users_to_add, mode):
+    url = f"{DEFAULT_360_API_URL_V2}/{settings.org_id}/mail-lists/{settings.target_group['emailId']}/update-permissions"
+    headers = {
+        "Authorization": f"OAuth {settings.oauth_token}",
+        "Content-Type": "application/json"
+    }
+        
+    subjects = []
+    data = {}
+    data["role_actions"] = []
+    #проверяем, что в группе нет разрешения на anonymous, иначе удаляем его
+    if mode == "ADD":
+        permissions = get_mailing_list_permissions(settings, settings.target_group['emailId'])
+        if permissions is None:
+            logger.error(f"Failed to get mailing list permissions for group {settings.target_group['name']}")
+        else:
+            if 'grants' in permissions and 'items' in permissions['grants']:
+                for item in permissions['grants']['items']:
+                    if 'subject' in item:
+                        subject = item['subject']
+                        subject_type = subject.get('type', 'unknown')
+                        if subject_type == 'anonymous':
+                            logger.info("Found anonymous permission. Removing it...")
+                            subjects.append({  
+                                "type": "anonymous",
+                                "id": 0
+                            })
+                            data["role_actions"].append({  
+                                "type": "revoke",  
+                                "roles": ["mail_list_sender"],  
+                                "subjects": subjects
+                            })
+    try:
+        retries = 1
+        subjects = []
+        for user in users_to_add:
+            subjects.append({  
+            "type": "user",  
+            "id": int(user["id"]),  
+            "org_id": int(settings.org_id)  
+            })
+
+        data["role_actions"].append({  
+            "type": "grant",  
+            "roles": ["mail_list_sender"],  
+            "subjects": subjects  
+        })
+
+        logger.debug(f"Raw url: {url}")
+        logger.debug(f"Raw JSON: {data}")
+        while True:
+            response = requests.post(url, headers=headers, json=data)
+            if not (response.status_code == 200 or response.status_code == 204):
+                logger.error(f"Error during POST request: {response.status_code}. Error message: {response.text}")
+                if retries < MAX_RETRIES:
+                    logger.error(f"Retrying ({retries+1}/{MAX_RETRIES})")
+                    time.sleep(RETRIES_DELAY_SEC * retries)
+                    retries += 1
+                else:
+                    logger.error(f"Error. Change send permissions for group {settings.target_group['name']} ({settings.target_group['id']}, {settings.target_group['emailId']}) failed.")
+                    break
+            else:
+                logger.info(f"Success - permissions for group {settings.target_group['name']} ({settings.target_group['id']}, {settings.target_group['emailId']}) changed successfully.")
+                break
+    except Exception as e:
+        logger.error(f"{type(e).__name__} at line {e.__traceback__.tb_lineno} of {__file__}: {e}")
 
 if __name__ == "__main__":
 
