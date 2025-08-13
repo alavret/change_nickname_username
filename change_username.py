@@ -498,7 +498,7 @@ def subsubmenu_30(settings: "SettingParams"):
             #send_perm_remove_users_from_allow_list(settings)
         elif choice == "4":
             print('\n')
-            #send_perm_grand_all_users(settings)
+            send_perm_grand_all_users(settings)
         else:
             print("Invalid choice. Please try again.")
 
@@ -1256,23 +1256,27 @@ def save_group_data_prompt(settings: "SettingParams"):
         logger.info(f"Group attributes saved to file: {filename}")
     return
 
-def show_mailing_list_permissions(settings: "SettingParams"):
-    users = []
+def show_mailing_list_permissions(settings: "SettingParams", input_group = {}, all_users = [] ):
+    users = all_users
     user_id_to_nickname = {}
     while True:
-        answer = input("Enter group alias, id or uid to get mailing list permissions (empty string to exit): ")
-        if not answer.strip():
-            break
-        
+        if not input_group:
+            answer = input("Enter group alias, id or uid to get mailing list permissions (empty string to exit): ")
+            if not answer.strip():
+                break
+        else:
+            answer = str(input_group["id"])
+            
         target_group, groups = get_target_group_data_prompt(settings, answer)
         if not target_group:
             continue
      
         if not users:
             users = get_all_api360_users(settings)
-            if users:
-                for user in users:
-                    user_id_to_nickname[user['id']] = user.get('nickname', 'Unknown')
+
+        if not user_id_to_nickname:
+            for user in users:
+                user_id_to_nickname[user['id']] = user.get('nickname', 'Unknown')
         
         # Get mailing list permissions
         permissions = get_mailing_list_permissions(settings, target_group['emailId'])
@@ -1317,6 +1321,9 @@ def show_mailing_list_permissions(settings: "SettingParams"):
             logger.info(" - No permission subjects found.")
         logger.info("--------------------------------------------------------")
         logger.info("\n")
+
+        if input_group:
+            break
     return
 
 def get_mailing_list_permissions(settings: "SettingParams", group_id: str):
@@ -1576,12 +1583,17 @@ def default_email_update_from_file(settings: "SettingParams"):
 
 def send_perm_set_target_group(settings: "SettingParams"):
     while True:
+        print("\n")
         answer = input("Enter group alias, id or uid to get mailing list permissions (empty string to exit): ")
         if not answer.strip():
             break
         
         target_group, groups = get_target_group_data_prompt(settings, answer)
         if not target_group:
+            continue
+        elif str(target_group["emailId"]) == "0":
+            logger.error(f"Group with alias {answer} is not mail enabled. Exiting.")
+            settings.target_group = {}
             continue
         else:
             logger.info(f"Target group set: {target_group['name']} ({target_group['id']}, {target_group['emailId']})")
@@ -1592,6 +1604,10 @@ def send_perm_add_users_to_allow_list_prompt(settings: "SettingParams"):
     while True:
         answer = input("Enter users aliases or uid, separated by comma or space (empty string to exit): ")
         if not answer.strip():
+            break
+
+        if not settings.target_group:
+            logger.info("No target group set. Exiting.")
             break
 
         users = get_all_api360_users(settings)
@@ -1626,24 +1642,43 @@ def send_perm_add_users_to_allow_list_prompt(settings: "SettingParams"):
         if not users_to_add:
             logger.info("No users to add. Exiting.")
             continue
-        if not settings.target_group:
-            logger.info("No target group set. Exiting.")
-            continue
 
-        send_perm_call_api(settings, users_to_add, "ADD")
+        if send_perm_call_api(settings, users_to_add, "ADD_USER"):
+            show_mailing_list_permissions(settings, settings.target_group, users)
+            break
+        
+def send_perm_grand_all_users(settings: "SettingParams"):
 
-def send_perm_call_api(settings: "SettingParams", users_to_add, mode):
+    if not settings.target_group:
+        logger.info("No target group set. Exiting.")
+        return
+    
+    show_mailing_list_permissions(settings, settings.target_group)
+
+    answer = input("Need confirmation for setting grand all permission (yes/no): ").strip().lower()
+    while answer not in ["yes", "no"]:
+        logger.warning("Enter 'yes' или 'no'")
+        answer = input("Need confirmation for setting grand all permission (yes/no): ").strip().lower()
+
+    if answer == "yes":
+        if send_perm_call_api(settings, None, "SET_DEFAULT"):
+            show_mailing_list_permissions(settings, settings.target_group, None)
+    else:
+        logger.info("Execution canceled.")
+
+    return
+def send_perm_call_api(settings: "SettingParams", users_to_change, mode):
     url = f"{DEFAULT_360_API_URL_V2}/{settings.org_id}/mail-lists/{settings.target_group['emailId']}/update-permissions"
     headers = {
         "Authorization": f"OAuth {settings.oauth_token}",
         "Content-Type": "application/json"
     }
-        
+    return_value = False    
     subjects = []
     data = {}
     data["role_actions"] = []
     #проверяем, что в группе нет разрешения на anonymous, иначе удаляем его
-    if mode == "ADD":
+    if mode.startswith("ADD"):
         permissions = get_mailing_list_permissions(settings, settings.target_group['emailId'])
         if permissions is None:
             logger.error(f"Failed to get mailing list permissions for group {settings.target_group['name']}")
@@ -1664,15 +1699,15 @@ def send_perm_call_api(settings: "SettingParams", users_to_add, mode):
                                 "roles": ["mail_list_sender"],  
                                 "subjects": subjects
                             })
-    try:
-        retries = 1
+
+    if mode == "ADD_USER":
         subjects = []
-        for user in users_to_add:
+        for user in users_to_change:
             subjects.append({  
-            "type": "user",  
-            "id": int(user["id"]),  
-            "org_id": int(settings.org_id)  
-            })
+                "type": "user",  
+                "id": int(user["id"]),  
+                "org_id": int(settings.org_id)  
+                })
 
         data["role_actions"].append({  
             "type": "grant",  
@@ -1680,8 +1715,37 @@ def send_perm_call_api(settings: "SettingParams", users_to_add, mode):
             "subjects": subjects  
         })
 
-        logger.debug(f"Raw url: {url}")
-        logger.debug(f"Raw JSON: {data}")
+    elif mode == "SET_DEFAULT":
+        permissions = get_mailing_list_permissions(settings, settings.target_group['emailId'])
+        if permissions is None:
+            logger.error(f"Failed to get mailing list permissions for group {settings.target_group['name']}")
+        else:
+            subjects = []
+            for item in permissions['grants']['items']:
+                if 'subject' in item:
+                    if item['subject']['type'] != 'anonymous':
+                        subjects.append(item['subject'])
+
+            data["role_actions"].append({
+                "type": "revoke",  
+                "roles": ["mail_list_sender"],  
+                "subjects": subjects
+            })
+
+        data["role_actions"].append({  
+            "type": "overwrite",  
+            "roles": ["mail_list_sender"],  
+            "subjects": [{  
+                "type": "anonymous",  
+                "id": 0  
+            }]  
+        })
+
+    logger.debug(f"Raw url: {url}")
+    logger.debug(f"Raw JSON: {json.dumps(data)})")
+    try:
+        retries = 1
+
         while True:
             response = requests.post(url, headers=headers, json=data)
             if not (response.status_code == 200 or response.status_code == 204):
@@ -1695,9 +1759,12 @@ def send_perm_call_api(settings: "SettingParams", users_to_add, mode):
                     break
             else:
                 logger.info(f"Success - permissions for group {settings.target_group['name']} ({settings.target_group['id']}, {settings.target_group['emailId']}) changed successfully.")
+                return_value = True
                 break
     except Exception as e:
         logger.error(f"{type(e).__name__} at line {e.__traceback__.tb_lineno} of {__file__}: {e}")
+
+    return return_value
 
 if __name__ == "__main__":
 
